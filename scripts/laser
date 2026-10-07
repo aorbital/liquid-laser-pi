@@ -1,13 +1,350 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
+
 PROJECT="${LIQUID_LASER_PROJECT:-$HOME/liquid-laser-pi}"
 BUILD="$PROJECT/build"
+
 cd "$PROJECT"
-cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
-cmake --build "$BUILD" -j2
-REDIST=$(dirname "$(find "$HOME/ros2_astra_camera_openni" -type f -name 'libOpenNI2.so' | grep '/arm64/' | head -n 1)")
-LASERLIB=$(find "$HOME/laserdocklib/build" -type f \( -name 'liblaserdocklib.so' -o -name 'liblaserdocklib.a' \) | head -n 1)
-export OPENNI2_REDIST="$REDIST"
-export OPENNI2_REDIST64="$REDIST"
-export LD_LIBRARY_PATH="$REDIST:$(dirname "$LASERLIB"):${LD_LIBRARY_PATH:-}"
-exec "$BUILD/liquid_laser" "$@"
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+find_openni() {
+    find "$HOME/ros2_astra_camera_openni" \
+        -type f \
+        -name 'libOpenNI2.so' \
+        | grep '/arm64/' \
+        | head -n 1
+}
+
+
+find_laserdocklib() {
+    find "$HOME/laserdocklib/build" \
+        -type f \
+        \( \
+            -name 'liblaserdocklib.so' \
+            -o \
+            -name 'liblaserdocklib.a' \
+        \) \
+        | head -n 1
+}
+
+
+configure_and_build() {
+
+    echo
+    echo "========================================"
+    echo "Building liquid-laser-pi"
+    echo "========================================"
+    echo
+
+    cmake \
+        -S "$PROJECT" \
+        -B "$BUILD" \
+        -DCMAKE_BUILD_TYPE=Release
+
+    cmake \
+        --build "$BUILD" \
+        -j2
+
+    echo
+    echo "Build complete."
+    echo
+}
+
+
+setup_runtime() {
+
+    OPENNI_LIB="$(find_openni)"
+
+    LASERLIB="$(find_laserdocklib)"
+
+
+    if [ -z "${OPENNI_LIB:-}" ]; then
+        echo "ERROR: OpenNI2 ARM64 runtime not found."
+        exit 1
+    fi
+
+
+    if [ -z "${LASERLIB:-}" ]; then
+        echo "ERROR: laserdocklib not found."
+        exit 1
+    fi
+
+
+    REDIST="$(dirname "$OPENNI_LIB")"
+
+    LASERLIB_DIR="$(dirname "$LASERLIB")"
+
+
+    export OPENNI2_REDIST="$REDIST"
+
+    export OPENNI2_REDIST64="$REDIST"
+
+    export LD_LIBRARY_PATH="$REDIST:$LASERLIB_DIR:${LD_LIBRARY_PATH:-}"
+}
+
+
+run_laser() {
+
+    setup_runtime
+
+    echo
+    echo "========================================"
+    echo "Running liquid laser"
+    echo "========================================"
+    echo
+
+    exec "$BUILD/liquid_laser" "$@"
+}
+
+
+update_repo() {
+
+    echo
+    echo "========================================"
+    echo "Updating liquid-laser-pi"
+    echo "========================================"
+    echo
+
+
+    # --------------------------------------------------------
+    # Refuse to overwrite local Pi-side changes.
+    # --------------------------------------------------------
+
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+
+        echo "ERROR: Local changes detected."
+        echo
+        git status --short
+        echo
+        echo "Commit/stash/revert them before updating."
+
+        exit 1
+
+    fi
+
+
+    CURRENT_BRANCH="$(
+        git branch \
+            --show-current
+    )"
+
+
+    if [ -z "$CURRENT_BRANCH" ]; then
+
+        echo "ERROR: Repository is not currently on a branch."
+
+        exit 1
+
+    fi
+
+
+    echo "Branch: $CURRENT_BRANCH"
+
+    echo "Current:"
+    git log \
+        -1 \
+        --pretty=format:'  %h  %cd  %s' \
+        --date=short
+
+    echo
+    echo
+
+
+    # --------------------------------------------------------
+    # Fetch + fast-forward only.
+    #
+    # Never create an automatic merge commit on the Pi.
+    # --------------------------------------------------------
+
+    git fetch origin
+
+    git pull \
+        --ff-only \
+        origin \
+        "$CURRENT_BRANCH"
+
+
+    echo
+    echo "Now:"
+    git log \
+        -1 \
+        --pretty=format:'  %h  %cd  %s' \
+        --date=short
+
+    echo
+    echo
+}
+
+
+show_status() {
+
+    echo
+    echo "Project:"
+    echo "  $PROJECT"
+
+    echo
+
+    echo "Branch:"
+    echo "  $(git branch --show-current)"
+
+    echo
+
+    echo "Commit:"
+    git log \
+        -1 \
+        --pretty=format:'  %h  %cd  %s' \
+        --date=iso
+
+    echo
+    echo
+
+    echo "Remote:"
+    git remote \
+        -v
+
+    echo
+
+    echo "Working tree:"
+    git status \
+        --short
+
+    echo
+}
+
+
+show_help() {
+
+    cat <<'EOF'
+
+Liquid Laser launcher
+
+Usage:
+
+  laser [laser arguments]
+
+      Build if necessary and run the current local version.
+
+      Example:
+
+        laser 80 100 2
+
+        laser 80 100 2 \
+          --particles 160 \
+          --field 96 \
+          --substeps 1
+
+
+  laser update
+
+      Pull latest GitHub code and build.
+      Does NOT start the artwork.
+
+
+  laser update [laser arguments]
+
+      Pull latest GitHub code,
+      build,
+      then immediately run.
+
+      Example:
+
+        laser update 80 100 2
+
+        laser update 80 100 2 \
+          --particles 160 \
+          --field 96 \
+          --substeps 1
+
+
+  laser build
+
+      Build current checkout without updating or running.
+
+
+  laser status
+
+      Show current branch, commit and local modifications.
+
+
+  laser help
+
+      Show this help.
+
+EOF
+}
+
+
+# ============================================================
+# COMMAND ROUTER
+# ============================================================
+
+COMMAND="${1:-}"
+
+
+case "$COMMAND" in
+
+    update)
+
+        shift
+
+        update_repo
+
+        configure_and_build
+
+
+        # If additional arguments were supplied:
+        # update + build + run.
+        if [ "$#" -gt 0 ]; then
+
+            run_laser "$@"
+
+        fi
+
+        ;;
+
+
+    build)
+
+        shift
+
+        configure_and_build
+
+        ;;
+
+
+    status)
+
+        shift
+
+        show_status
+
+        ;;
+
+
+    help|--help|-h)
+
+        show_help
+
+        ;;
+
+
+    *)
+
+        # Normal behaviour:
+        #
+        #   laser 80 100 2
+        #
+        # CMake only recompiles changed files.
+
+        configure_and_build
+
+        run_laser "$@"
+
+        ;;
+
+esac

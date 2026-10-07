@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-PROJECT="${LIQUID_LASER_PROJECT:-$HOME/liquid-laser-pi}"
-cd "$PROJECT"
-git pull --ff-only
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j2
